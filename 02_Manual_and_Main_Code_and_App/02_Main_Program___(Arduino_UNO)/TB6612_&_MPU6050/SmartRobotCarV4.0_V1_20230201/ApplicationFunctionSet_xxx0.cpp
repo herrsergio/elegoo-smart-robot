@@ -208,6 +208,47 @@ static void ApplicationFunctionSet_SmartRobotCarMotionControl(SmartRobotCarMotio
   static uint8_t directionRecord = 0;
   uint8_t Kp, UpperLimit;
   uint8_t speed = is_speed;
+
+  // Smoothing logic for Rocker Mode (Manual Control)
+  if (Application_SmartRobotCarxxx0.Functional_Mode == Rocker_mode) {
+    static int current_smoothed_speed = 0;
+    static unsigned long last_ramp_time = 0;
+    static SmartRobotCarMotionControl last_direction = stop_it;
+
+    unsigned long current_time = millis();
+    if (current_time - last_ramp_time >= 5) {
+      last_ramp_time = current_time;
+
+      if (direction != last_direction && direction != stop_it && last_direction != stop_it) {
+        // Ramp down before switching direction
+        if (current_smoothed_speed > 0) {
+          current_smoothed_speed -= 10;
+          if (current_smoothed_speed < 0) current_smoothed_speed = 0;
+        } else {
+          last_direction = direction;
+        }
+        direction = last_direction; // Keep old direction while ramping down
+      } else {
+        last_direction = (direction != stop_it) ? direction : last_direction;
+        int target_speed = (direction == stop_it) ? 0 : is_speed;
+
+        if (current_smoothed_speed < target_speed) {
+          current_smoothed_speed += 10;
+          if (current_smoothed_speed > target_speed) current_smoothed_speed = target_speed;
+        } else if (current_smoothed_speed > target_speed) {
+          current_smoothed_speed -= 10;
+          if (current_smoothed_speed < target_speed) current_smoothed_speed = target_speed;
+        }
+      }
+    }
+    speed = current_smoothed_speed;
+    if (speed == 0) {
+      direction = stop_it;
+    } else {
+      direction = last_direction;
+    }
+  }
+
   //Control mode that requires straight line movement adjustment（Car will has movement offset easily in the below mode，the movement cannot achieve the effect of a relatively straight direction
   //so it needs to add control adjustment）
   switch (Application_SmartRobotCarxxx0.Functional_Mode)
@@ -662,45 +703,44 @@ void ApplicationFunctionSet::ApplicationFunctionSet_Obstacle(void)
     {
       ApplicationFunctionSet_SmartRobotCarMotionControl(stop_it, 0);
 
-      for (uint8_t i = 1; i < 6; i += 2) //1、3、5 Omnidirectional detection of obstacle avoidance status
-      {
-        AppServo.DeviceDriverSet_Servo_control(30 * i /*Position_angle*/);
-        delay_xxx(1);
-        AppULTRASONIC.DeviceDriverSet_ULTRASONIC_Get(&get_Distance /*out*/);
+      uint16_t dist_right;
+      uint16_t dist_left;
 
-        if (function_xxx(get_Distance, 0, 20))
-        {
-          ApplicationFunctionSet_SmartRobotCarMotionControl(stop_it, 0);
-          if (5 == i)
-          {
-            ApplicationFunctionSet_SmartRobotCarMotionControl(Backward, 150);
-            delay_xxx(500);
-            ApplicationFunctionSet_SmartRobotCarMotionControl(Right, 150);
-            delay_xxx(50);
-            first_is = true;
-            break;
-          }
-        }
-        else
-        {
-          switc_ctrl = 0;
-          switch (i)
-          {
-          case 1:
-            ApplicationFunctionSet_SmartRobotCarMotionControl(Right, 150);
-            break;
-          case 3:
-            ApplicationFunctionSet_SmartRobotCarMotionControl(Forward, 150);
-            break;
-          case 5:
-            ApplicationFunctionSet_SmartRobotCarMotionControl(Left, 150);
-            break;
-          }
-          delay_xxx(50);
-          first_is = true;
-          break;
-        }
+      // Look Right
+      AppServo.DeviceDriverSet_Servo_control(30 /*Position_angle*/);
+      delay_xxx(1);
+      AppULTRASONIC.DeviceDriverSet_ULTRASONIC_Get(&dist_right /*out*/);
+
+      // Look Left
+      AppServo.DeviceDriverSet_Servo_control(150 /*Position_angle*/);
+      delay_xxx(1);
+      AppULTRASONIC.DeviceDriverSet_ULTRASONIC_Get(&dist_left /*out*/);
+
+      // Make decision based on scanned distances
+      if (dist_left < 20 && dist_right < 20)
+      {
+        // Both sides blocked: reverse and turn
+        ApplicationFunctionSet_SmartRobotCarMotionControl(Backward, 150);
+        delay_xxx(500);
+        ApplicationFunctionSet_SmartRobotCarMotionControl(Right, 150);
+        delay_xxx(50);
       }
+      else if (dist_left >= dist_right)
+      {
+        // Left has more open space
+        ApplicationFunctionSet_SmartRobotCarMotionControl(Left, 150);
+        delay_xxx(50);
+      }
+      else
+      {
+        // Right has more open space
+        ApplicationFunctionSet_SmartRobotCarMotionControl(Right, 150);
+        delay_xxx(50);
+      }
+      
+      // Reset first_is to true so the servo centers (90 deg) on the next loop iteration.
+      // This will block for ~450ms, giving the car time to execute the turn.
+      first_is = true;
     }
     else //if (function_xxx(get_Distance, 20, 50))
     {
