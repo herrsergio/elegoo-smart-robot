@@ -683,30 +683,65 @@ void ApplicationFunctionSet::ApplicationFunctionSet_Tracking(void)
 
 /*
   Obstacle Avoidance Mode
+
+  On encountering an obstacle (<BLOCKED_CM ahead) the sweep records all
+  three angles (30/90/150) and picks the most-clear direction. Hysteresis
+  uses BLOCKED_CM (entry) vs CLEAR_CM (exit) so noisy readings near 20 cm
+  don't flicker. Tied L/R results are broken in favor of the side opposite
+  the last turn so the robot doesn't orbit. If no direction is clear, back
+  up and randomize Left vs Right. Recovery rotations use a 300-600 ms
+  randomized duration so the heading varies on every encounter.
+
+  GetFreshUltrasonic() pumps the async ultrasonic state machine for one
+  ping cycle after a servo move, since the main loop (which normally pumps
+  _Update()) is blocked while we are inside this handler.
 */
+static void GetFreshUltrasonic(uint16_t *out_cm)
+{
+  unsigned long start = millis();
+  while (millis() - start < 60)
+  {
+    AppULTRASONIC.DeviceDriverSet_ULTRASONIC_Update();
+    wdt_reset();
+  }
+  AppULTRASONIC.DeviceDriverSet_ULTRASONIC_Get(out_cm);
+}
+
 void ApplicationFunctionSet::ApplicationFunctionSet_Obstacle(void)
 {
+  static const uint16_t BLOCKED_CM = 20;
+  static const uint16_t CLEAR_CM = 30;
+  static const uint8_t SWEEP_ANGLES[3] = {30, 90, 150};
+  enum { ANGLE_RIGHT = 0, ANGLE_FRONT = 1, ANGLE_LEFT = 2 };
+
   static boolean first_is = true;
+  static int8_t last_turn_dir = 0; //-1 = left, +1 = right, 0 = none
+
   if (Application_SmartRobotCarxxx0.Functional_Mode == ObstacleAvoidance_mode)
   {
-    uint8_t switc_ctrl = 0;
-    uint16_t get_Distance;
     if (Car_LeaveTheGround == false)
     {
       ApplicationFunctionSet_SmartRobotCarMotionControl(stop_it, 0);
       return;
     }
-    if (first_is == true) //Enter the mode for the first time, and modulate the steering gear to 90 degrees
+    if (first_is == true) //Enter mode: center servo and seed RNG once.
     {
       AppServo.DeviceDriverSet_Servo_control(90 /*Position_angle*/);
+      randomSeed(micros() ^ ((unsigned long)analogRead(A0) << 16));
+      last_turn_dir = 0;
       first_is = false;
     }
 
-    AppULTRASONIC.DeviceDriverSet_ULTRASONIC_Get(&get_Distance /*out*/);
-    if (function_xxx(get_Distance, 0, 20))
-    {
-      ApplicationFunctionSet_SmartRobotCarMotionControl(stop_it, 0);
+    uint16_t front_dist;
+    AppULTRASONIC.DeviceDriverSet_ULTRASONIC_Get(&front_dist);
 
+    if (front_dist >= BLOCKED_CM)
+    {
+      ApplicationFunctionSet_SmartRobotCarMotionControl(Forward, 150);
+      return;
+    }
+
+<<<<<<< Updated upstream
       uint16_t dist_right;
       uint16_t dist_left;
 
@@ -728,6 +763,27 @@ void ApplicationFunctionSet::ApplicationFunctionSet_Obstacle(void)
         delay_xxx(500);
         ApplicationFunctionSet_SmartRobotCarMotionControl(Right, 150);
         delay_xxx(50);
+=======
+    //Front blocked: stop, sweep all three angles, pick best.
+    ApplicationFunctionSet_SmartRobotCarMotionControl(stop_it, 0);
+
+    uint16_t dist[3];
+    for (uint8_t i = 0; i < 3; i++)
+    {
+      AppServo.DeviceDriverSet_Servo_control(SWEEP_ANGLES[i]);
+      GetFreshUltrasonic(&dist[i]);
+    }
+    AppServo.DeviceDriverSet_Servo_control(90 /*recenter*/);
+
+    int8_t best = -1;
+    uint16_t best_dist = 0;
+    for (uint8_t i = 0; i < 3; i++)
+    {
+      if (dist[i] > CLEAR_CM && dist[i] > best_dist)
+      {
+        best = i;
+        best_dist = dist[i];
+>>>>>>> Stashed changes
       }
       else if (dist_left >= dist_right)
       {
@@ -746,10 +802,47 @@ void ApplicationFunctionSet::ApplicationFunctionSet_Obstacle(void)
       // This will block for ~450ms, giving the car time to execute the turn.
       first_is = true;
     }
-    else //if (function_xxx(get_Distance, 20, 50))
+
+    //Anti-orbit tie-break: only override when we'd otherwise repeat the
+    //last turn and the alternative side is within 10 cm of the winner.
+    if (best == ANGLE_LEFT && last_turn_dir == -1 &&
+        dist[ANGLE_RIGHT] > CLEAR_CM &&
+        (dist[ANGLE_LEFT] - dist[ANGLE_RIGHT]) <= 10)
+    {
+      best = ANGLE_RIGHT;
+    }
+    else if (best == ANGLE_RIGHT && last_turn_dir == 1 &&
+             dist[ANGLE_LEFT] > CLEAR_CM &&
+             (dist[ANGLE_RIGHT] - dist[ANGLE_LEFT]) <= 10)
+    {
+      best = ANGLE_LEFT;
+    }
+
+    long turn_ms = 300 + random(300); //[300, 600) ms
+    if (best == ANGLE_FRONT)
     {
       ApplicationFunctionSet_SmartRobotCarMotionControl(Forward, 150);
     }
+    else if (best == ANGLE_LEFT)
+    {
+      ApplicationFunctionSet_SmartRobotCarMotionControl(Left, 150);
+      last_turn_dir = -1;
+    }
+    else if (best == ANGLE_RIGHT)
+    {
+      ApplicationFunctionSet_SmartRobotCarMotionControl(Right, 150);
+      last_turn_dir = 1;
+    }
+    else
+    {
+      //All directions blocked: back up, then randomize the recovery turn.
+      ApplicationFunctionSet_SmartRobotCarMotionControl(Backward, 150);
+      delay_xxx(500);
+      bool turn_right = (random(2) == 0);
+      ApplicationFunctionSet_SmartRobotCarMotionControl(turn_right ? Right : Left, 150);
+      last_turn_dir = turn_right ? 1 : -1;
+    }
+    delay_xxx(turn_ms);
   }
   else
   {
