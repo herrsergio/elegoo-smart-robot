@@ -741,29 +741,6 @@ void ApplicationFunctionSet::ApplicationFunctionSet_Obstacle(void)
       return;
     }
 
-<<<<<<< Updated upstream
-      uint16_t dist_right;
-      uint16_t dist_left;
-
-      // Look Right
-      AppServo.DeviceDriverSet_Servo_control(30 /*Position_angle*/);
-      delay_xxx(1);
-      AppULTRASONIC.DeviceDriverSet_ULTRASONIC_Get(&dist_right /*out*/);
-
-      // Look Left
-      AppServo.DeviceDriverSet_Servo_control(150 /*Position_angle*/);
-      delay_xxx(1);
-      AppULTRASONIC.DeviceDriverSet_ULTRASONIC_Get(&dist_left /*out*/);
-
-      // Make decision based on scanned distances
-      if (dist_left < 20 && dist_right < 20)
-      {
-        // Both sides blocked: reverse and turn
-        ApplicationFunctionSet_SmartRobotCarMotionControl(Backward, 150);
-        delay_xxx(500);
-        ApplicationFunctionSet_SmartRobotCarMotionControl(Right, 150);
-        delay_xxx(50);
-=======
     //Front blocked: stop, sweep all three angles, pick best.
     ApplicationFunctionSet_SmartRobotCarMotionControl(stop_it, 0);
 
@@ -783,24 +760,7 @@ void ApplicationFunctionSet::ApplicationFunctionSet_Obstacle(void)
       {
         best = i;
         best_dist = dist[i];
->>>>>>> Stashed changes
       }
-      else if (dist_left >= dist_right)
-      {
-        // Left has more open space
-        ApplicationFunctionSet_SmartRobotCarMotionControl(Left, 150);
-        delay_xxx(50);
-      }
-      else
-      {
-        // Right has more open space
-        ApplicationFunctionSet_SmartRobotCarMotionControl(Right, 150);
-        delay_xxx(50);
-      }
-      
-      // Reset first_is to true so the servo centers (90 deg) on the next loop iteration.
-      // This will block for ~450ms, giving the car time to execute the turn.
-      first_is = true;
     }
 
     //Anti-orbit tie-break: only override when we'd otherwise repeat the
