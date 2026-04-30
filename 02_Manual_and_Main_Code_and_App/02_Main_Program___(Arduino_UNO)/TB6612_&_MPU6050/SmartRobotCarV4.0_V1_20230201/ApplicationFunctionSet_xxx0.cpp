@@ -363,6 +363,10 @@ static void ApplicationFunctionSet_SmartRobotCarMotionControl(SmartRobotCarMotio
 void ApplicationFunctionSet::ApplicationFunctionSet_SensorDataUpdate(void)
 {
 
+  //Drive the async ultrasonic state machine. Returns immediately unless
+  //50 ms have elapsed since the last ping.
+  AppULTRASONIC.DeviceDriverSet_ULTRASONIC_Update();
+
   // AppMotor.DeviceDriverSet_Motor_Test();
   { /*Battery voltage status update*/
     static unsigned long VoltageData_time = 0;
