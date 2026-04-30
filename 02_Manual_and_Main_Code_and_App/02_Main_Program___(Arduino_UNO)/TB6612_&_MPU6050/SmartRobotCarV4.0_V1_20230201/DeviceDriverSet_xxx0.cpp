@@ -9,6 +9,7 @@
 #include "DeviceDriverSet_xxx0.h"
 //#include "PinChangeInt.h"
 #include <avr/wdt.h>
+#include <avr/interrupt.h>
 static void
 delay_xxx(uint16_t _ms)
 {
@@ -270,31 +271,93 @@ void DeviceDriverSet_Motor::DeviceDriverSet_Motor_control(boolean direction_A, u
 /*ULTRASONIC*/
 //#include <NewPing.h>
 // NewPing sonar(TRIGGER_PIN, ECHO_PIN, MAX_DISTANCE); // NewPing setup of pins and maximum distance.
+
+/*
+  Asynchronous HC-SR04 driver.
+
+  The original implementation used pulseIn() and blocked the main loop for up
+  to ~9 ms per reading (sensor capped at 150 cm here). To free the loop we
+  drive the sensor with a millis()-based state machine and capture the echo
+  edges in a Pin Change Interrupt (PCINT0_vect, PB4 / pin 12 / PCINT4).
+
+  Trade-off: enabling PCMSK0 bit 4 reserves PORTB pin 12 for our ISR. The
+  IR receiver uses TIMER2 OVF (not PCINT) and INT0 is on pin 2, so there
+  is no conflict in this project. Adding SoftwareSerial later would require
+  re-checking the masks.
+*/
+
+volatile unsigned long DeviceDriverSet_ULTRASONIC::echo_start = 0;
+volatile unsigned long DeviceDriverSet_ULTRASONIC::echo_end = 0;
+volatile uint16_t DeviceDriverSet_ULTRASONIC::current_distance = 150;
+
+static volatile bool us_echo_pending = false;
+static unsigned long us_last_trigger_ms = 0;
+
+ISR(PCINT0_vect)
+{
+  //Pin 12 = PB4. Read PINB to discriminate edge direction.
+  if (PINB & (1 << PB4))
+  {
+    DeviceDriverSet_ULTRASONIC::echo_start = micros();
+  }
+  else
+  {
+    DeviceDriverSet_ULTRASONIC::echo_end = micros();
+    unsigned long dt = DeviceDriverSet_ULTRASONIC::echo_end -
+                       DeviceDriverSet_ULTRASONIC::echo_start;
+    uint16_t cm = (uint16_t)(dt / 58UL);
+    if (cm > 150)
+      cm = 150;
+    DeviceDriverSet_ULTRASONIC::current_distance = cm;
+    us_echo_pending = false;
+  }
+}
+
 void DeviceDriverSet_ULTRASONIC::DeviceDriverSet_ULTRASONIC_Init(void)
 {
   pinMode(ECHO_PIN, INPUT); //Ultrasonic module initialization
   pinMode(TRIG_PIN, OUTPUT);
+  digitalWrite(TRIG_PIN, LOW);
+
+  //Enable Pin Change Interrupt on PB4 (Arduino pin 12).
+  PCICR |= (1 << PCIE0);   //PCI group 0 covers PORTB (pins 8..13).
+  PCMSK0 |= (1 << PCINT4); //Mask in PCINT4 only; leave others untouched.
 }
-void DeviceDriverSet_ULTRASONIC::DeviceDriverSet_ULTRASONIC_Get(uint16_t *ULTRASONIC_Get /*out*/)
+
+void DeviceDriverSet_ULTRASONIC::DeviceDriverSet_ULTRASONIC_Update(void)
 {
-  unsigned int tempda_x = 0;
+  unsigned long now = millis();
+  if (now - us_last_trigger_ms < 50) //One ping per 50 ms
+    return;
+
+  //If the prior echo never came back (object out of range or absorbed),
+  //declare max distance and re-arm so the state machine doesn't deadlock.
+  if (us_echo_pending)
+  {
+    current_distance = 150;
+    us_echo_pending = false;
+  }
+
+  us_last_trigger_ms = now;
+  us_echo_pending = true;
+
+  //10 us trigger pulse. Total blocking time per Update() is ~12 us.
   digitalWrite(TRIG_PIN, LOW);
   delayMicroseconds(2);
   digitalWrite(TRIG_PIN, HIGH);
   delayMicroseconds(10);
   digitalWrite(TRIG_PIN, LOW);
-  tempda_x = ((unsigned int)pulseIn(ECHO_PIN, HIGH) / 58);
-  // *ULTRASONIC_Get = tempda_x;
+}
 
-  if (tempda_x > 150)
-  {
-    *ULTRASONIC_Get = 150;
-  }
-  else
-  {
-    *ULTRASONIC_Get = tempda_x;
-  }
-  // sonar.ping() / US_ROUNDTRIP_CM; // Send ping, get ping time in microseconds (uS).
+void DeviceDriverSet_ULTRASONIC::DeviceDriverSet_ULTRASONIC_Get(uint16_t *ULTRASONIC_Get /*out*/)
+{
+  //Atomic 16-bit read: AVR is 8-bit, so a torn read is possible if the ISR
+  //fires between the two byte fetches.
+  uint8_t sreg = SREG;
+  cli();
+  uint16_t value = current_distance;
+  SREG = sreg;
+  *ULTRASONIC_Get = value;
 }
 
 #if _Test_DeviceDriverSet

@@ -126,14 +126,21 @@ class DeviceDriverSet_ULTRASONIC
 {
 public:
   void DeviceDriverSet_ULTRASONIC_Init(void);
+  void DeviceDriverSet_ULTRASONIC_Update(void); //Async state machine: must be called every loop
 #if _Test_DeviceDriverSet
   void DeviceDriverSet_ULTRASONIC_Test(void);
 #endif
   void DeviceDriverSet_ULTRASONIC_Get(uint16_t *ULTRASONIC_Get /*out*/);
 
+public:
+  //Shared with PCINT0_vect (file-scope ISR in the .cpp)
+  static volatile unsigned long echo_start;
+  static volatile unsigned long echo_end;
+  static volatile uint16_t current_distance;
+
 private:
 #define TRIG_PIN 13      // Arduino pin tied to trigger pin on the ultrasonic sensor.
-#define ECHO_PIN 12      // Arduino pin tied to echo pin on the ultrasonic sensor.
+#define ECHO_PIN 12      // Arduino pin tied to echo pin on the ultrasonic sensor (PB4 / PCINT4).
 #define MAX_DISTANCE 200 // Maximum distance we want to ping for (in centimeters). Maximum sensor distance is rated at 400-500cm.
 };
 /*Servo*/

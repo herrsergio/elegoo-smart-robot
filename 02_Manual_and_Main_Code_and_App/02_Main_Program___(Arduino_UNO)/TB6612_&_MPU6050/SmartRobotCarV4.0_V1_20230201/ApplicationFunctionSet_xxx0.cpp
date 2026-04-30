@@ -51,6 +51,18 @@ delay_xxx(uint16_t _ms)
   }
 }
 
+//Inline xorshift32 PRNG. Saves ~150 bytes of flash vs avr-libc random()/randomSeed().
+static uint32_t prng_state = 0x12345678UL;
+static uint32_t prng_next(void)
+{
+  uint32_t x = prng_state;
+  x ^= x << 13;
+  x ^= x >> 17;
+  x ^= x << 5;
+  prng_state = x;
+  return x;
+}
+
 /*Movement Direction Control List*/
 enum SmartRobotCarMotionControl
 {
@@ -208,6 +220,47 @@ static void ApplicationFunctionSet_SmartRobotCarMotionControl(SmartRobotCarMotio
   static uint8_t directionRecord = 0;
   uint8_t Kp, UpperLimit;
   uint8_t speed = is_speed;
+
+  // Smoothing logic for Rocker Mode (Manual Control)
+  if (Application_SmartRobotCarxxx0.Functional_Mode == Rocker_mode) {
+    static int current_smoothed_speed = 0;
+    static unsigned long last_ramp_time = 0;
+    static SmartRobotCarMotionControl last_direction = stop_it;
+
+    unsigned long current_time = millis();
+    if (current_time - last_ramp_time >= 5) {
+      last_ramp_time = current_time;
+
+      if (direction != last_direction && direction != stop_it && last_direction != stop_it) {
+        // Ramp down before switching direction
+        if (current_smoothed_speed > 0) {
+          current_smoothed_speed -= 10;
+          if (current_smoothed_speed < 0) current_smoothed_speed = 0;
+        } else {
+          last_direction = direction;
+        }
+        direction = last_direction; // Keep old direction while ramping down
+      } else {
+        last_direction = (direction != stop_it) ? direction : last_direction;
+        int target_speed = (direction == stop_it) ? 0 : is_speed;
+
+        if (current_smoothed_speed < target_speed) {
+          current_smoothed_speed += 10;
+          if (current_smoothed_speed > target_speed) current_smoothed_speed = target_speed;
+        } else if (current_smoothed_speed > target_speed) {
+          current_smoothed_speed -= 10;
+          if (current_smoothed_speed < target_speed) current_smoothed_speed = target_speed;
+        }
+      }
+    }
+    speed = current_smoothed_speed;
+    if (speed == 0) {
+      direction = stop_it;
+    } else {
+      direction = last_direction;
+    }
+  }
+
   //Control mode that requires straight line movement adjustment（Car will has movement offset easily in the below mode，the movement cannot achieve the effect of a relatively straight direction
   //so it needs to add control adjustment）
   switch (Application_SmartRobotCarxxx0.Functional_Mode)
@@ -321,6 +374,10 @@ static void ApplicationFunctionSet_SmartRobotCarMotionControl(SmartRobotCarMotio
 */
 void ApplicationFunctionSet::ApplicationFunctionSet_SensorDataUpdate(void)
 {
+
+  //Drive the async ultrasonic state machine. Returns immediately unless
+  //50 ms have elapsed since the last ping.
+  AppULTRASONIC.DeviceDriverSet_ULTRASONIC_Update();
 
   // AppMotor.DeviceDriverSet_Motor_Test();
   { /*Battery voltage status update*/
@@ -638,74 +695,127 @@ void ApplicationFunctionSet::ApplicationFunctionSet_Tracking(void)
 
 /*
   Obstacle Avoidance Mode
+
+  On encountering an obstacle (<BLOCKED_CM ahead) the sweep records all
+  three angles (30/90/150) and picks the most-clear direction. Hysteresis
+  uses BLOCKED_CM (entry) vs CLEAR_CM (exit) so noisy readings near 20 cm
+  don't flicker. Tied L/R results are broken in favor of the side opposite
+  the last turn so the robot doesn't orbit. If no direction is clear, back
+  up and randomize Left vs Right. Recovery rotations use a 300-600 ms
+  randomized duration so the heading varies on every encounter.
+
+  GetFreshUltrasonic() pumps the async ultrasonic state machine for one
+  ping cycle after a servo move, since the main loop (which normally pumps
+  _Update()) is blocked while we are inside this handler.
 */
+static void GetFreshUltrasonic(uint16_t *out_cm)
+{
+  unsigned long start = millis();
+  while (millis() - start < 60)
+  {
+    AppULTRASONIC.DeviceDriverSet_ULTRASONIC_Update();
+    wdt_reset();
+  }
+  AppULTRASONIC.DeviceDriverSet_ULTRASONIC_Get(out_cm);
+}
+
 void ApplicationFunctionSet::ApplicationFunctionSet_Obstacle(void)
 {
+  static const uint16_t BLOCKED_CM = 20;
+  static const uint16_t CLEAR_CM = 30;
+  static const uint8_t SWEEP_ANGLES[3] = {30, 90, 150};
+  enum { ANGLE_RIGHT = 0, ANGLE_FRONT = 1, ANGLE_LEFT = 2 };
+
   static boolean first_is = true;
+  static int8_t last_turn_dir = 0; //-1 = left, +1 = right, 0 = none
+
   if (Application_SmartRobotCarxxx0.Functional_Mode == ObstacleAvoidance_mode)
   {
-    uint8_t switc_ctrl = 0;
-    uint16_t get_Distance;
     if (Car_LeaveTheGround == false)
     {
       ApplicationFunctionSet_SmartRobotCarMotionControl(stop_it, 0);
       return;
     }
-    if (first_is == true) //Enter the mode for the first time, and modulate the steering gear to 90 degrees
+    if (first_is == true) //Enter mode: center servo and seed PRNG once.
     {
       AppServo.DeviceDriverSet_Servo_control(90 /*Position_angle*/);
+      prng_state = micros() ^ ((unsigned long)analogRead(A0) << 16);
+      if (prng_state == 0) prng_state = 1; //xorshift gets stuck on zero
+      last_turn_dir = 0;
       first_is = false;
     }
 
-    AppULTRASONIC.DeviceDriverSet_ULTRASONIC_Get(&get_Distance /*out*/);
-    if (function_xxx(get_Distance, 0, 20))
+    uint16_t front_dist;
+    AppULTRASONIC.DeviceDriverSet_ULTRASONIC_Get(&front_dist);
+
+    if (front_dist >= BLOCKED_CM)
     {
-      ApplicationFunctionSet_SmartRobotCarMotionControl(stop_it, 0);
+      ApplicationFunctionSet_SmartRobotCarMotionControl(Forward, 150);
+      return;
+    }
 
-      for (uint8_t i = 1; i < 6; i += 2) //1、3、5 Omnidirectional detection of obstacle avoidance status
+    //Front blocked: stop, sweep all three angles, pick best.
+    ApplicationFunctionSet_SmartRobotCarMotionControl(stop_it, 0);
+
+    uint16_t dist[3];
+    for (uint8_t i = 0; i < 3; i++)
+    {
+      AppServo.DeviceDriverSet_Servo_control(SWEEP_ANGLES[i]);
+      GetFreshUltrasonic(&dist[i]);
+    }
+    AppServo.DeviceDriverSet_Servo_control(90 /*recenter*/);
+
+    int8_t best = -1;
+    uint16_t best_dist = 0;
+    for (uint8_t i = 0; i < 3; i++)
+    {
+      if (dist[i] > CLEAR_CM && dist[i] > best_dist)
       {
-        AppServo.DeviceDriverSet_Servo_control(30 * i /*Position_angle*/);
-        delay_xxx(1);
-        AppULTRASONIC.DeviceDriverSet_ULTRASONIC_Get(&get_Distance /*out*/);
-
-        if (function_xxx(get_Distance, 0, 20))
-        {
-          ApplicationFunctionSet_SmartRobotCarMotionControl(stop_it, 0);
-          if (5 == i)
-          {
-            ApplicationFunctionSet_SmartRobotCarMotionControl(Backward, 150);
-            delay_xxx(500);
-            ApplicationFunctionSet_SmartRobotCarMotionControl(Right, 150);
-            delay_xxx(50);
-            first_is = true;
-            break;
-          }
-        }
-        else
-        {
-          switc_ctrl = 0;
-          switch (i)
-          {
-          case 1:
-            ApplicationFunctionSet_SmartRobotCarMotionControl(Right, 150);
-            break;
-          case 3:
-            ApplicationFunctionSet_SmartRobotCarMotionControl(Forward, 150);
-            break;
-          case 5:
-            ApplicationFunctionSet_SmartRobotCarMotionControl(Left, 150);
-            break;
-          }
-          delay_xxx(50);
-          first_is = true;
-          break;
-        }
+        best = i;
+        best_dist = dist[i];
       }
     }
-    else //if (function_xxx(get_Distance, 20, 50))
+
+    //Anti-orbit tie-break: only override when we'd otherwise repeat the
+    //last turn and the alternative side is within 10 cm of the winner.
+    if (best == ANGLE_LEFT && last_turn_dir == -1 &&
+        dist[ANGLE_RIGHT] > CLEAR_CM &&
+        (dist[ANGLE_LEFT] - dist[ANGLE_RIGHT]) <= 10)
+    {
+      best = ANGLE_RIGHT;
+    }
+    else if (best == ANGLE_RIGHT && last_turn_dir == 1 &&
+             dist[ANGLE_LEFT] > CLEAR_CM &&
+             (dist[ANGLE_RIGHT] - dist[ANGLE_LEFT]) <= 10)
+    {
+      best = ANGLE_LEFT;
+    }
+
+    long turn_ms = 300 + (prng_next() % 300); //[300, 600) ms
+    if (best == ANGLE_FRONT)
     {
       ApplicationFunctionSet_SmartRobotCarMotionControl(Forward, 150);
     }
+    else if (best == ANGLE_LEFT)
+    {
+      ApplicationFunctionSet_SmartRobotCarMotionControl(Left, 150);
+      last_turn_dir = -1;
+    }
+    else if (best == ANGLE_RIGHT)
+    {
+      ApplicationFunctionSet_SmartRobotCarMotionControl(Right, 150);
+      last_turn_dir = 1;
+    }
+    else
+    {
+      //All directions blocked: back up, then randomize the recovery turn.
+      ApplicationFunctionSet_SmartRobotCarMotionControl(Backward, 150);
+      delay_xxx(500);
+      bool turn_right = ((prng_next() & 1) == 0);
+      ApplicationFunctionSet_SmartRobotCarMotionControl(turn_right ? Right : Left, 150);
+      last_turn_dir = turn_right ? 1 : -1;
+    }
+    delay_xxx(turn_ms);
   }
   else
   {

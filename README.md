@@ -40,6 +40,41 @@ Datasheets and detailed technical information regarding the specific chips and m
 3. Upload the Main Program to your Arduino UNO or follow along with the tutorials in `03_Tutorial_and_Code` to build up your own firmware step-by-step.
 4. Install the mobile app to control the car via Bluetooth/Wi-Fi and see the camera stream!
 
+## IR Remote Control Mapping
+
+The infrared remote control is mapped to the following functions on the Smart Robot Car:
+
+### Movement Controls
+| Remote Button | Action |
+| :--- | :--- |
+| **Up Arrow** | Move Forward |
+| **Down Arrow** | Move Backward |
+| **Left Arrow** | Turn Left |
+| **Right Arrow** | Turn Right |
+| **OK Button** | Standby Mode (Stops all movement) |
+
+### Operating Modes
+| Remote Button | Action |
+| :--- | :--- |
+| **1** | Enter **Trace-Based Mode** (Line Tracking) |
+| **2** | Enter **Obstacle Avoidance Mode** |
+| **3** | Enter **Follow Mode** |
+
+### Trace-Based Mode Adjustments 
+*(These buttons only work when the car is currently in Trace-Based Mode)*
+| Remote Button | Action |
+| :--- | :--- |
+| **4** | Increase the tracking threshold by 10 (Up to a maximum of 600) |
+| **5** | Reset the tracking threshold to its default value (250) |
+| **6** | Decrease the tracking threshold by 10 (Down to a minimum of 30) |
+
+### Speed Controls
+| Remote Button | Action |
+| :--- | :--- |
+| **7** | Increase the "Rocker Car Speed" by 5 (Up to a maximum of 255) |
+| **8** | Reset the "Rocker Car Speed" to 250 |
+| **9** | Decrease the "Rocker Car Speed" by 5 (Down to a minimum of 50) |
+
 ## Notes
 
 - This repository represents the V4.0 version of the Smart Robot Car. Make sure your hardware matches this version to avoid incompatibilities.
