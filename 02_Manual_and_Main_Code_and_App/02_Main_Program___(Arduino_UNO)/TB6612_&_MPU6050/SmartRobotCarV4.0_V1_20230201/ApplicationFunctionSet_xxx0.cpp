@@ -51,6 +51,18 @@ delay_xxx(uint16_t _ms)
   }
 }
 
+//Inline xorshift32 PRNG. Saves ~150 bytes of flash vs avr-libc random()/randomSeed().
+static uint32_t prng_state = 0x12345678UL;
+static uint32_t prng_next(void)
+{
+  uint32_t x = prng_state;
+  x ^= x << 13;
+  x ^= x >> 17;
+  x ^= x << 5;
+  prng_state = x;
+  return x;
+}
+
 /*Movement Direction Control List*/
 enum SmartRobotCarMotionControl
 {
@@ -724,10 +736,11 @@ void ApplicationFunctionSet::ApplicationFunctionSet_Obstacle(void)
       ApplicationFunctionSet_SmartRobotCarMotionControl(stop_it, 0);
       return;
     }
-    if (first_is == true) //Enter mode: center servo and seed RNG once.
+    if (first_is == true) //Enter mode: center servo and seed PRNG once.
     {
       AppServo.DeviceDriverSet_Servo_control(90 /*Position_angle*/);
-      randomSeed(micros() ^ ((unsigned long)analogRead(A0) << 16));
+      prng_state = micros() ^ ((unsigned long)analogRead(A0) << 16);
+      if (prng_state == 0) prng_state = 1; //xorshift gets stuck on zero
       last_turn_dir = 0;
       first_is = false;
     }
@@ -778,7 +791,7 @@ void ApplicationFunctionSet::ApplicationFunctionSet_Obstacle(void)
       best = ANGLE_LEFT;
     }
 
-    long turn_ms = 300 + random(300); //[300, 600) ms
+    long turn_ms = 300 + (prng_next() % 300); //[300, 600) ms
     if (best == ANGLE_FRONT)
     {
       ApplicationFunctionSet_SmartRobotCarMotionControl(Forward, 150);
@@ -798,7 +811,7 @@ void ApplicationFunctionSet::ApplicationFunctionSet_Obstacle(void)
       //All directions blocked: back up, then randomize the recovery turn.
       ApplicationFunctionSet_SmartRobotCarMotionControl(Backward, 150);
       delay_xxx(500);
-      bool turn_right = (random(2) == 0);
+      bool turn_right = ((prng_next() & 1) == 0);
       ApplicationFunctionSet_SmartRobotCarMotionControl(turn_right ? Right : Left, 150);
       last_turn_dir = turn_right ? 1 : -1;
     }
