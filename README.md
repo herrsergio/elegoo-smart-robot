@@ -79,3 +79,10 @@ The infrared remote control is mapped to the following functions on the Smart Ro
 
 - This repository represents the V4.0 version of the Smart Robot Car. Make sure your hardware matches this version to avoid incompatibilities.
 - The main code relies on specific libraries included within the respective sketch directories.
+
+## Customizations in this fork
+
+This fork modifies the main UNO firmware at `02_Manual_and_Main_Code_and_App/02_Main_Program___(Arduino_UNO)/TB6612_&_MPU6050/SmartRobotCarV4.0_V1_20230201/`:
+
+- **Non-blocking ultrasonic driver.** Distance readings are taken in the background via a Pin Change Interrupt on the echo pin, so the main loop is no longer stalled ~9 ms per measurement. `_Get()` returns a cached value instantly; a 50 ms-cadence state machine drives the trigger pulse.
+- **Improved obstacle avoidance.** The 30° / 90° / 150° servo sweep now records all three angles and picks the side with the *most* open space (not the first one that exceeds the threshold). It applies hysteresis between "blocked" (20 cm) and "clear" (30 cm) to ignore borderline readings, randomizes recovery-turn duration between 300 and 600 ms, randomizes the back-up direction when every direction is blocked, and includes an anti-orbit tie-break so the robot doesn't keep making the same turn into a corner.
